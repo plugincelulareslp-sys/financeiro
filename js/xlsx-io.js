@@ -41,8 +41,8 @@ export async function lerPlanilha(file) {
   const avisos = [];
   const cont = readTable(XLSX, wb, 'Contratos'), parc = readTable(XLSX, wb, 'Parcelas');
   if (!cont || !parc) throw new Error('Não encontrei as abas "Contratos" e "Parcelas". Use o arquivo controle_financeiro.xlsx (ou uma exportação deste sistema).');
-  const rec = readTable(XLSX, wb, 'Recompras') || [], aco = readTable(XLSX, wb, 'Acordos') || [], ant = readTable(XLSX, wb, ['Antecipações', 'Antecipacoes']) || [], pag = readTable(XLSX, wb, 'Pagamentos') || [];
-  const dados = { contratos: [], parcelas: [], recompras: [], acordos: [], antecipacoes: [], pagamentos: [], bancos: [], config: null, contadores: [] };
+  const remv = readTable(XLSX, wb, 'Remover') || [], rec = readTable(XLSX, wb, 'Recompras') || [], aco = readTable(XLSX, wb, 'Acordos') || [], ant = readTable(XLSX, wb, ['Antecipações', 'Antecipacoes']) || [], pag = readTable(XLSX, wb, 'Pagamentos') || [];
+  const dados = { contratos: [], parcelas: [], recompras: [], acordos: [], antecipacoes: [], pagamentos: [], bancos: [], config: null, contadores: [], remover: [] };
   const ids = new Set();
   for (const r of cont) {
     const id = str(r['ID']); if (!id) continue;
@@ -62,6 +62,10 @@ export async function lerPlanilha(file) {
     const parcela = str(r['Parcela']); if (!parcela) continue; if (!pids.has(parcela)) { avisos.push(`Recompra de parcela inexistente ignorada: ${parcela}`); continue; }
     const aj = num(r['Ajuste de valor']); const st = str(r['Status da recompra']);
     dados.recompras.push({ id: parcela, parcela, ajuste: aj == null ? null : round2(aj), status: ['Pago', 'Protestado', 'Renegociado'].includes(st) ? st : null, juridico: yes(r['Enviado ao jurídico']) ? 'Sim' : 'Não', dtBaixa: toISO(r['Data da baixa']), dtPgto: toISO(r['Data do pagamento']), valorPago: num(r['Valor pago']) || 0, encargos: round2(num(r['Encargos (+/-)']) || 0), encargosMotivo: str(r['Motivo dos encargos']), dtProtesto: toISO(r['Data do protesto']), cartorio: str(r['Cartório do protesto']), protocoloProtesto: str(r['Protocolo do protesto']), obsProtesto: str(r['Observação do protesto']) });
+  }
+  for (const r of remv) { // aba opcional "Remover": registros substituídos (usada pelas atualizações de dados do banco; só vale no modo Mesclar)
+    const col = /^parcela/i.test(str(r['Coleção'])) ? 'parcelas' : /^recompra/i.test(str(r['Coleção'])) ? 'recompras' : null; const id = str(r['ID']);
+    if (col && id) dados.remover.push({ col, id });
   }
   for (const r of aco) {
     const contrato = str(r['Contrato']); if (!contrato) continue; if (!ids.has(contrato)) { avisos.push(`Acordo de contrato inexistente ignorado: ${contrato}`); continue; }
@@ -89,7 +93,7 @@ export async function lerPlanilha(file) {
   for (const b of bancosUsados) if (b && !nomes.has(b)) { avisos.push(`Banco "${b}" usado nos contratos mas ausente da lista de bancos — será criado.`); dados.bancos.push({ id: b, nome: b, prefixo: b.slice(0, 3).toUpperCase(), rotuloId: 'ID', usaAntecipacao: false, limite: 0, ativo: true, ordem: dados.bancos.length + 1 }); }
   const maxByPrefix = {}; for (const c of dados.contratos) { const [p, n] = c.id.split('-'); maxByPrefix[p] = Math.max(maxByPrefix[p] || 0, parseInt(n, 10) || 0); }
   for (const [p, n] of Object.entries(maxByPrefix)) dados.contadores.push({ id: p, n });
-  const resumo = { contratos: dados.contratos.length, parcelas: dados.parcelas.length, recompras: dados.recompras.length, acordos: dados.acordos.length, antecipacoes: dados.antecipacoes.length, pagamentos: dados.pagamentos.length, bancos: dados.bancos.length };
+  const resumo = { contratos: dados.contratos.length, ...(dados.remover.length ? { 'registros a remover': dados.remover.length } : {}), parcelas: dados.parcelas.length, recompras: dados.recompras.length, acordos: dados.acordos.length, antecipacoes: dados.antecipacoes.length, pagamentos: dados.pagamentos.length, bancos: dados.bancos.length };
   return { dados, resumo, avisos };
 }
 
@@ -106,11 +110,16 @@ export async function aplicarImportacao({ dados, resumo }, modo, onProgress) {
   const a = app.adapter; if (app.user.role !== 'admin') throw new Error('Somente administradores podem importar.');
   if (modo === 'substituir') { onProgress?.('Apagando dados atuais…'); await a.wipeAll(['contratos', 'parcelas', 'recompras', 'acordos', 'antecipacoes', 'pagamentos', 'bancos', 'contadores']); }
   const ops = [];
+  if (modo === 'mesclar') for (const d of dados.remover || []) { // não apaga o que a própria planilha grava
+    if ((dados[d.col] || []).some((x) => x.id === d.id)) continue; ops.push({ op: 'delete', col: d.col, id: d.id });
+  }
   // No modo Mesclar, bancos e parâmetros que já existem no sistema NÃO são sobrescritos (a planilha só acrescenta clientes/parcelas).
   const bancosExistentes = new Set(store.list('bancos').map((b) => b.id));
   for (const col of ['bancos', 'contratos', 'parcelas', 'recompras', 'acordos', 'antecipacoes', 'pagamentos', 'contadores', 'historico']) for (const d of dados[col] || []) {
     if (modo === 'mesclar' && col === 'bancos' && bancosExistentes.has(d.id)) continue;
-    const { id, ...rest } = d; ops.push({ op: 'set', col, id, data: { ...rest, id } });
+    if (modo === 'mesclar' && col === 'contadores' && (store.get('contadores', d.id)?.n || 0) >= d.n) continue; // nunca diminui o contador de IDs
+    const { id, ...rest } = d; // Mesclar: contratos são mesclados campo a campo (preserva bloqueio, cancelamento etc. feitos no site); demais coleções são substituídas pelo mesmo ID
+    ops.push({ op: modo === 'mesclar' && col === 'contratos' ? 'update' : 'set', col, id, data: { ...rest, id } });
   }
   if (dados.listas && !(modo === 'mesclar' && store.get('config', 'listas'))) ops.push({ op: 'set', col: 'config', id: 'listas', data: dados.listas });
   if (dados.config && !(modo === 'mesclar' && store.get('config', 'params'))) ops.push({ op: 'set', col: 'config', id: 'params', data: dados.config });
