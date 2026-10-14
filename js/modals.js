@@ -1,5 +1,5 @@
 // Diálogos das operações (pagamento, cliente, recompra, acordo, antecipação, edições).
-import { app, store } from './store.js';
+import { app, store, listas } from './store.js';
 import * as ops from './ops.js';
 import { montarFila, ratear, fromC, toC, round2, hojeISO, addMonths, addDays, fmtData, brl } from './rules.js';
 import { modal, esc, $, $$, toast, parseBRL, brInput, confirmDialog, promptDialog, badge, normalize, icon } from './ui.js';
@@ -10,7 +10,7 @@ const field = (label, input, hint = '', cls = '') => `<div class="${cls}"><label
 const ajusteFields = (p, ini = {}) => `<div class="full"><label class="f">Desconto / acréscimo</label>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><select class="inp" id="${p}-t" style="flex:0 0 250px"><option value="0" ${!ini.t || ini.t === '0' ? 'selected' : ''}>Nenhum</option><option value="+" ${ini.t === '+' ? 'selected' : ''}>Acréscimo (+) — multa, juros, encargos</option><option value="-" ${ini.t === '-' ? 'selected' : ''}>Desconto (−)</option></select>
   <input class="inp" id="${p}-v" inputmode="decimal" placeholder="valor R$" value="${ini.v ? brInput(ini.v) : ''}" style="flex:0 0 130px" ${!ini.t || ini.t === '0' ? 'disabled' : ''}>
-  <input class="inp" id="${p}-m" placeholder="motivo (obrigatório)" value="${esc(ini.m || '')}" style="flex:1 1 200px" ${!ini.t || ini.t === '0' ? 'disabled' : ''}></div></div>`;
+  <input class="inp" id="${p}-m" placeholder="motivo (obrigatório)" list="dl-mot" value="${esc(ini.m || '')}" style="flex:1 1 200px" ${!ini.t || ini.t === '0' ? 'disabled' : ''}></div>${motivosDL()}</div>`;
 /** Lê os campos acima → { valor (com sinal, em R$), motivo }. */
 const lerAjuste = (p, el) => {
   const t = $('#' + p + '-t', el).value; const v = parseBRL($('#' + p + '-v', el).value);
@@ -22,7 +22,7 @@ const ligarAjuste = (p, el, onChange) => {
   const sync = () => { const off = t.value === '0'; v.disabled = off; mo.disabled = off; if (off) { v.value = ''; mo.value = ''; } };
   t.addEventListener('change', () => { sync(); if (t.value !== '0') v.focus(); onChange(); }); v.addEventListener('input', onChange); sync();
 };
-const FORMAS = ['PIX', 'Boleto', 'Dinheiro', 'Cartão de débito', 'Cartão de crédito', 'Transferência', 'Depósito', 'Outro'];
+const motivosDL = () => `<datalist id="dl-mot">${listas().motivos.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
 
 /* ----------------------------------------------------------------- escolher cliente */
 export function escolherCliente(onPick, titulo = 'Escolher cliente') {
@@ -30,7 +30,7 @@ export function escolherCliente(onPick, titulo = 'Escolher cliente') {
   const run = () => {
     const q = normalize($('#pc-q', m.el).value);
     const list = M().contratos.filter((c) => !q || normalize(c.cliente + ' ' + c.referencia + ' ' + c.id).includes(q)).slice(0, 40);
-    $('#pc-r', m.el).innerHTML = list.map((c) => `<a class="pick" data-id="${c.id}" style="display:flex;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #eef1f6;cursor:pointer;color:inherit;text-decoration:none"><span><b>${esc(c.cliente)}</b><br><span class="mute sm">${esc(c.id)} · ${esc(c.banco)} · ref. ${esc(c.referencia || '—')}</span></span><span class="r">${c.valorVencido > 0 ? badge('Vencido ' + brl(c.valorVencido), 'bad') : badge('Em dia', 'ok')}</span></a>`).join('') || '<div class="mute" style="padding:14px">Nenhum cliente encontrado.</div>';
+    $('#pc-r', m.el).innerHTML = list.map((c) => `<a class="pick" data-id="${c.id}" style="display:flex;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #eef1f6;cursor:pointer;color:inherit;text-decoration:none"><span><b>${esc(c.cliente)}</b>${chipsContrato(c)}<br><span class="mute sm">${esc(c.id)} · ${esc(c.banco)} · ref. ${esc(c.referencia || '—')}</span></span><span class="r">${c.valorVencido > 0 ? badge('Vencido ' + brl(c.valorVencido), 'bad') : ''}${c.cancelado ? badge('Cancelado', 'mute') : c.devidoLoja > 0 ? badge('Deve à loja ' + brl(c.devidoLoja), 'purple') : c.valorVencido > 0 ? '' : badge('Em dia', 'ok')}</span></a>`).join('') || '<div class="mute" style="padding:14px">Nenhum cliente encontrado.</div>';
   };
   $('#pc-q', m.el).addEventListener('input', run); run();
   m.el.addEventListener('click', (e) => { const a = e.target.closest('.pick'); if (a) { m.close(); onPick(a.dataset.id); } });
@@ -58,7 +58,7 @@ export function abrirPagamento({ contrato, alvoTipo = 'parcela', alvoId, valor }
     ${ajusteFields('pg-aj')}
     ${field('Valor recebido (R$)', `<input class="inp" id="pg-valor" inputmode="decimal" placeholder="0,00" value="${valor ? brInput(valor) : ''}">`, `<a href="#" id="pg-saldo">usar saldo do item</a> · pode ser parcial ou maior que a parcela`)}
     ${field('Data do pagamento', `<input class="inp" type="date" id="pg-data" value="${hojeISO()}" max="${hojeISO()}">`)}
-    ${field('Forma', `<select class="inp" id="pg-forma">${FORMAS.map((f) => `<option>${f}</option>`).join('')}</select>`)}
+    ${field('Forma', `<select class="inp" id="pg-forma">${listas().formas.map((f) => `<option>${esc(f)}</option>`).join('')}</select>`)}
     ${field('Se pagar a mais', `<select class="inp" id="pg-modo"><option value="futuras">Abater nas próximas parcelas</option><option value="antigas">Abater nas mais antigas em aberto</option><option value="nenhum">Não permitir excedente</option></select>`)}
     ${field('Observação', `<input class="inp" id="pg-obs" placeholder="opcional">`, '', 'full')}
    </div><div class="preview" id="pg-prev"></div>`;
@@ -182,9 +182,21 @@ export async function acaoRenegociarDireto(parcelaId) {
   const p = M().pBy.get(parcelaId); if (!p) return;
   if (await confirmDialog(`Marcar a parcela ${p.n} de ${p.cliente} (${brl(p.devido)}) como RENEGOCIADA direto?\n\nEla deixa de contar como inadimplente.`, { title: 'Renegociação direta', okLabel: 'Marcar' })) { await ops.renegociarDireto(parcelaId); toast('Parcela renegociada.', 'ok'); }
 }
-export async function acaoProtestar(parcelaId) {
+/** Protesto no cartório: cartório, data e protocolo (também usado para corrigir os dados de um protesto já marcado). */
+export function acaoProtestar(parcelaId) {
   const r = M().rBy.get(parcelaId); if (!r) return;
-  if (await confirmDialog(`Marcar a recompra de ${r.cliente} (parcela ${r.nParc}, ${brl(r.saldo)}) como PROTESTADA?`, { title: 'Protesto', okLabel: 'Protestar', danger: true })) { await ops.resolverRecompra(parcelaId, 'Protestado'); toast('Recompra protestada.', 'ok'); }
+  if (r.status === 'Pago') return toast('Recompra já paga.', 'warn');
+  if (r.status === 'Renegociado') return toast('Recompra renegociada: reabra antes de marcar protesto.', 'warn');
+  const edit = r.status === 'Protestado';
+  const cartorios = [...new Set([...listas().cartorios, ...store.list('recompras').map((x) => x.cartorio).filter(Boolean)])].sort();
+  const m = modal({ title: edit ? 'Dados do protesto' : 'Marcar protesto', size: 'sm', body: `<div class="alert info"><b>${esc(r.cliente)}</b> · parcela ${r.nParc}${r.nivel ? ' (acordo ' + r.nivel + ')' : ''} · saldo <b>${brl(r.saldo)}</b></div><div class="fg" style="margin-top:10px">
+    ${field('Cartório onde foi protestado', `<input class="inp" id="pt-c" list="pt-cl" placeholder="ex.: 1º Tabelionato de Protesto de Nova Serrana" value="${esc(r.cartorio || '')}" autocomplete="off"><datalist id="pt-cl">${cartorios.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`, '', 'full')}
+    ${field('Data do protesto', `<input class="inp" type="date" id="pt-d" value="${r.dtProtesto || (edit && r.dtBaixa) || hojeISO()}" max="${hojeISO()}">`)}
+    ${field('Nº do protocolo', `<input class="inp" id="pt-p" placeholder="opcional" value="${esc(r.protocoloProtesto || '')}">`)}
+    ${field('Observação', `<input class="inp" id="pt-o" placeholder="opcional" value="${esc(r.obsProtesto || '')}">`, '', 'full')}</div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, { label: edit ? 'Salvar' : 'Protestar', cls: edit ? 'primary' : 'danger', onClick: async () => {
+      await ops.registrarProtesto(parcelaId, { data: $('#pt-d', m.el).value, cartorio: $('#pt-c', m.el).value, protocolo: $('#pt-p', m.el).value, obs: $('#pt-o', m.el).value }); toast(edit ? 'Dados do protesto salvos.' : 'Recompra protestada.', 'ok');
+    } }] });
 }
 export async function acaoReabrirRecompra(parcelaId) {
   if (await confirmDialog('Reabrir esta recompra (volta a ficar sem resolução)?', { title: 'Reabrir recompra', okLabel: 'Reabrir' })) { await ops.resolverRecompra(parcelaId, null); toast('Recompra reaberta.', 'ok'); }
@@ -251,4 +263,116 @@ export async function acaoEstornar(grupo) {
   const total = gs.reduce((s, g) => s + g.valor, 0);
   const motivo = await promptDialog(`Estornar o pagamento de ${brl(total)} (${fmtData(gs[0].data)})? As parcelas voltam ao estado anterior. Informe o motivo:`, { title: 'Estornar pagamento', okLabel: 'Estornar', placeholder: 'motivo do estorno' });
   if (motivo == null) return; await ops.estornarPagamento(grupo, motivo.trim()); toast('Pagamento estornado.', 'ok');
+}
+
+/* ----------------------------------------------------------------- operações em grupo (várias parcelas do cliente) */
+const linhasSel = (sel) => {
+  const mm = M(); const out = [];
+  for (const it of sel) {
+    if (it.tipo === 'parcela') { const p = mm.pBy.get(it.id); if (p) out.push({ ...it, p, venc: p.venc, saldo: p.saldo, nivel: p.nivel, rotulo: `${p.nivel ? 'Acordo ' + p.nivel + ' · ' : ''}Parcela ${p.n}`, rec: false }); }
+    else { const r = mm.rBy.get(it.id); if (r) out.push({ ...it, p: mm.pBy.get(it.id), r, venc: r.venc, saldo: r.saldo, nivel: r.nivel, rotulo: `RECOMPRA · ${r.nivel ? 'Acordo ' + r.nivel + ' · ' : ''}Parcela ${r.nParc}${r.status ? ' (' + r.status + ')' : ''}`, rec: true }); }
+  }
+  return out.sort((a, b) => (a.venc < b.venc ? -1 : a.venc > b.venc ? 1 : a.nivel - b.nivel));
+};
+const tabelaSel = (ls) => `<div class="tbl-wrap" style="max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:8px"><table class="tbl"><thead><tr><th>Item</th><th>Venc.</th><th class="r">Saldo</th></tr></thead><tbody>${ls.map((l) => `<tr><td>${esc(l.rotulo)}</td><td>${fmtData(l.venc)}</td><td class="r">${brl(l.saldo)}</td></tr>`).join('')}</tbody></table></div>`;
+const somaSel = (ls) => round2(ls.reduce((s, l) => s + l.saldo, 0));
+
+/** Quitação total de vários itens com valor negociado (desconto/acréscimo opcional, rateado entre os itens). */
+export function abrirQuitarGrupo(contrato, sel, onDone) {
+  const c = M().cBy.get(contrato); const ls = linhasSel(sel); if (!c || !ls.length) return toast('Selecione ao menos um item.', 'warn');
+  const soma = somaSel(ls);
+  const m = modal({ title: `Quitação total — ${ls.length} item(ns)`, size: 'lg', body: `<div class="alert info"><b>${esc(c.cliente)}</b> · ${esc(c.id)} · ${esc(c.banco)}</div>${tabelaSel(ls)}
+    <div class="fg" style="margin-top:12px">
+    ${field('Soma dos saldos', `<input class="inp" value="${brl(soma)}" disabled>`)}
+    ${field('Valor a receber (R$)', `<input class="inp" id="qg-v" inputmode="decimal" value="${brInput(soma)}">`, 'Menor que a soma = desconto · maior = acréscimo (multa/juros). A diferença é rateada entre os itens.')}
+    ${field('Desconto em %', `<input class="inp" id="qg-pct" inputmode="decimal" placeholder="ex.: 10">`, 'Atalho: calcula o valor acima.')}
+    ${field('Motivo do desconto/acréscimo', `<input class="inp" id="qg-m" list="dl-mot" placeholder="obrigatório se houver diferença">${motivosDL()}`)}
+    ${field('Data do pagamento', `<input class="inp" type="date" id="qg-d" value="${hojeISO()}" max="${hojeISO()}">`)}
+    ${field('Forma', `<select class="inp" id="qg-f">${listas().formas.map((f) => `<option>${esc(f)}</option>`).join('')}</select>`)}
+    ${field('Observação', `<input class="inp" id="qg-o" placeholder="opcional">`, '', 'full')}</div><div class="preview" id="qg-prev"></div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, { label: 'Confirmar quitação', cls: 'primary', onClick: async (api) => {
+      const v = parseBRL($('#qg-v', m.el).value); if (!(v > 0)) throw new Error('Informe o valor a receber.');
+      const forma = $('#qg-f', m.el).value, data = $('#qg-d', m.el).value;
+      const r = await ops.quitarGrupo({ contrato, itens: sel.map(({ tipo, id }) => ({ tipo, id })), valorFinal: v, data, forma, obs: $('#qg-o', m.el).value.trim(), motivo: $('#qg-m', m.el).value });
+      toast(`Quitação de ${brl(v)} registrada (${ls.length} itens).`, 'ok'); if (onDone) onDone(); mostrarRecibo(c, r, { data, forma });
+    } }] });
+  const prev = () => {
+    const v = parseBRL($('#qg-v', m.el).value), d = isNaN(v) ? 0 : round2(v - soma);
+    $('#qg-prev', m.el).innerHTML = isNaN(v) ? '<span class="mute">Informe o valor.</span>' : d === 0 ? `Receber <b>${brl(v)}</b> — quita os ${ls.length} itens pelo valor cheio.` : `Receber <b>${brl(v)}</b> — ${d < 0 ? 'desconto' : 'acréscimo'} de <b>${brl(Math.abs(d))}</b> (${(Math.abs(d) / soma * 100).toFixed(1).replace('.', ',')}% da soma de ${brl(soma)}), rateado entre os itens.`;
+  };
+  $('#qg-v', m.el).addEventListener('input', () => { $('#qg-pct', m.el).value = ''; prev(); });
+  $('#qg-pct', m.el).addEventListener('input', () => { const p = parseBRL($('#qg-pct', m.el).value); if (!isNaN(p)) { $('#qg-v', m.el).value = brInput(Math.max(0.01, round2(soma * (1 - p / 100)))); if (!$('#qg-m', m.el).value) $('#qg-m', m.el).value = 'Desconto para quitação total'; } prev(); });
+  prev();
+}
+
+/** Recompra de várias parcelas de uma vez. */
+export function abrirRecomprarGrupo(contrato, sel, onDone) {
+  const c = M().cBy.get(contrato); const ls = linhasSel(sel).filter((l) => !l.rec); if (!c || !ls.length) return toast('Selecione parcelas em aberto.', 'warn');
+  const m = modal({ title: `Recomprar ${ls.length} parcela(s)`, size: 'lg', body: `<div class="alert info"><b>${esc(c.cliente)}</b> · ${esc(c.id)} · ${esc(c.banco)}<br>As parcelas passam a ser tratadas na aba Recompras (e, em bancos com antecipação, liberam limite). Total: <b>${brl(somaSel(ls))}</b></div>${tabelaSel(ls)}
+    <div class="fg" style="margin-top:12px">${field('Data da recompra', `<input class="inp" type="date" id="rg-d" value="${hojeISO()}">`)}</div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, { label: 'Recomprar todas', cls: 'primary', onClick: async () => {
+      const r = await ops.recomprarGrupo({ contrato, ids: ls.map((l) => l.id), data: $('#rg-d', m.el).value || hojeISO() }); toast(`${r.qtd} parcela(s) recomprada(s) — ${brl(r.total)}.`, 'ok'); if (onDone) onDone();
+    } }] });
+}
+
+/** Renegociação de várias parcelas/recompras num único acordo. */
+export function abrirRenegGrupo(contrato, sel, onDone) {
+  const mm = M(); const c = mm.cBy.get(contrato); const ls = linhasSel(sel); const P = mm.P; if (!c || !ls.length) return toast('Selecione ao menos um item.', 'warn');
+  const niveis = [...new Set(ls.map((l) => l.nivel))]; if (niveis.length > 1) return toast('Selecione itens do mesmo nível (parcelas normais OU de um mesmo acordo).', 'warn');
+  const nivel = niveis[0] + 1; if (nivel > P.maxNiveis) return toast('Limite de níveis de acordo atingido.', 'warn');
+  if ((mm.aDe.get(contrato) || []).some((a) => a.nivel === nivel)) return toast(`O contrato já tem o ${nivel}º acordo cadastrado (um por nível).`, 'warn');
+  const soma = somaSel(ls);
+  const m = modal({ title: `${nivel}º acordo — ${ls.length} item(ns) — ${c.cliente}`, size: 'lg', body: `<div class="alert info">Os itens selecionados serão recomprados (se ainda forem parcelas) e renegociados em <b>um único acordo</b>. Soma dos saldos: <b>${brl(soma)}</b></div>${tabelaSel(ls)}<div class="fg" style="margin-top:12px">
+    ${field('Valor base do acordo (R$)', `<input class="inp" id="rn-valor" value="${brInput(soma)}">`, 'Soma dos saldos ou outro valor negociado (desconto).')}
+    ${field('Encargos do acordo (R$)', `<input class="inp" id="rn-enc" inputmode="decimal" placeholder="0,00">`, 'IOF, juros, tarifas… Pode ser negativo (desconto).')}
+    ${field('Qtd. de parcelas', `<input class="inp" type="number" id="rn-qtd" min="1" max="${P.maxParcAcordo}" value="3">`, `máx. ${P.maxParcAcordo}`)}
+    ${field('1º vencimento', `<input class="inp" type="date" id="rn-venc" value="${addDays(hojeISO(), 30)}">`)}
+    ${field('Data da renegociação', `<input class="inp" type="date" id="rn-data" value="${hojeISO()}" max="${hojeISO()}">`)}
+    ${field('Observações', `<input class="inp" id="rn-obs">`, '', 'full')}</div><div class="preview" id="rn-prev"></div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, { label: 'Renegociar', cls: 'primary', onClick: async () => {
+      const base = parseBRL($('#rn-valor', m.el).value), enc = parseBRL($('#rn-enc', m.el).value) || 0;
+      const a = { valor: round2(base + enc), encargos: round2(enc), qtd: +$('#rn-qtd', m.el).value, primeiroVenc: $('#rn-venc', m.el).value, dtReneg: $('#rn-data', m.el).value, obs: $('#rn-obs', m.el).value };
+      const r = await ops.renegociarGrupo({ contrato, itens: sel.map(({ tipo, id }) => ({ tipo, id })), acordo: a, data: a.dtReneg }); toast(`${r.nivel}º acordo cadastrado: ${a.qtd} parcelas geradas.`, 'ok'); if (onDone) onDone();
+    } }] });
+  const prev = () => {
+    const enc = parseBRL($('#rn-enc', m.el).value) || 0, v = round2((parseBRL($('#rn-valor', m.el).value) || 0) + enc), q = +$('#rn-qtd', m.el).value, d = $('#rn-venc', m.el).value; const box = $('#rn-prev', m.el);
+    if (!(v > 0) || !(q > 0) || !d) { box.innerHTML = '<span class="mute">Preencha os dados do acordo.</span>'; return; }
+    const arr = ops.dividirParcelas(v, q); const dif = round2(v - soma);
+    box.innerHTML = `Valor do acordo: <b>${brl(v)}</b>${enc ? ` (base + ${brl(enc)} de encargos)` : ''}<br><b>${q} parcelas</b> de ${brl(arr[0])}${arr[q - 1] !== arr[0] ? ` (última ${brl(arr[q - 1])})` : ''} · de ${fmtData(d)} a ${fmtData(addMonths(d, q - 1))}<br><span class="mute">Diferença acordo × saldos: ${dif >= 0 ? '+' : ''}${brl(dif)} ${dif < 0 ? '(desconto concedido)' : ''}</span>`;
+  };
+  $$('input', m.el).forEach((x) => x.addEventListener('input', prev)); prev();
+}
+
+/* ----------------------------------------------------------------- bloqueio do aparelho */
+export const chipCancelado = (c) => (c && c.cancelado ? `<span class="blk cnc" title="${esc(c.canceladoObs || 'Contrato cancelado')}">Cancelado</span>` : '');
+export const chipsContrato = (c) => chipCancelado(c) + chipBloqueado(c);
+export const chipBloqueado = (c) => (c && c.bloqueado ? `<span class="blk" title="${esc(c.bloqueadoMotivo || 'Aparelho bloqueado')}">Bloqueado</span>` : '');
+export function abrirBloqueio(contrato) {
+  const c = M().cBy.get(contrato); if (!c) return;
+  const des = !!c.bloqueado;
+  const m = modal({ title: des ? 'Desbloquear aparelho' : 'Marcar aparelho como bloqueado', size: 'sm', body: `<div class="alert ${des ? 'info' : 'warn'}"><b>${esc(c.cliente)}</b> · ${esc(c.id)} · ref. ${esc(c.referencia || '—')}${des ? `<br>Bloqueado desde ${fmtData(c.bloqueadoEm)}${c.bloqueadoMotivo ? ' — ' + esc(c.bloqueadoMotivo) : ''}` : '<br>O cliente passa a aparecer com a etiqueta <b>Bloqueado</b> na lista de clientes. Isto é só um registro: o bloqueio do aparelho em si é feito por você no sistema do aparelho.'}</div>
+    <div class="fg" style="margin-top:10px">${field(des ? 'Data do desbloqueio' : 'Data do bloqueio', `<input class="inp" type="date" id="bq-d" value="${hojeISO()}" max="${hojeISO()}">`)}${field('Motivo / observação', `<input class="inp" id="bq-m" placeholder="${des ? 'ex.: regularizou o pagamento' : 'ex.: 3 parcelas em atraso'}">`, '', 'full')}</div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, { label: des ? 'Desbloquear' : 'Marcar como bloqueado', cls: des ? 'primary' : 'danger', onClick: async () => {
+      await ops.alternarBloqueio(contrato, { bloquear: !des, motivo: $('#bq-m', m.el).value, data: $('#bq-d', m.el).value }); toast(des ? 'Aparelho desbloqueado.' : 'Aparelho marcado como bloqueado.', 'ok');
+    } }] });
+}
+
+/* ----------------------------------------------------------------- cancelamento do contrato */
+export function abrirCancelamento(contrato) {
+  const c = M().cBy.get(contrato); if (!c) return;
+  const ed = !!c.cancelado;
+  const m = modal({ title: ed ? 'Dados do cancelamento' : 'Cancelar contrato', size: 'lg', body: `<div class="alert ${ed ? 'info' : 'warn'}"><b>${esc(c.cliente)}</b> · ${esc(c.id)} · ref. ${esc(c.referencia || '—')} · recebido até agora <b>${brl(c.totalPago)}</b>${ed ? '' : '<br>Ao cancelar, as parcelas em aberto e recompras pendentes <b>deixam de ser cobradas</b> e saem da inadimplência, da régua e dos críticos. Nada é apagado e o cancelamento pode ser desfeito depois (reativar).'}</div>
+    <div class="fg" style="margin-top:10px">
+    ${field('Data do cancelamento', `<input class="inp" type="date" id="cc-d" value="${c.canceladoEm || hojeISO()}" max="${hojeISO()}">`)}
+    ${field('Aparelho recolhido?', `<select class="inp" id="cc-r"><option value="0" ${!c.aparelhoRecolhido ? 'selected' : ''}>Não</option><option value="1" ${c.aparelhoRecolhido ? 'selected' : ''}>Sim, aparelho recolhido</option></select>`)}
+    ${field('Houve estorno do valor ao cliente?', `<select class="inp" id="cc-e"><option value="0" ${!c.estornoHouve ? 'selected' : ''}>Não houve estorno</option><option value="1" ${c.estornoHouve ? 'selected' : ''}>Sim, valor estornado</option></select>`)}
+    ${field('Valor estornado (R$)', `<input class="inp" id="cc-v" inputmode="decimal" value="${c.estornoHouve ? brInput(c.valorEstornado) : ''}" placeholder="0,00" ${c.estornoHouve ? '' : 'disabled'}>`, `<a href="#" id="cc-tot">usar o total recebido (${brl(c.totalPago)})</a>`)}
+    ${field('Observação', `<input class="inp" id="cc-o" value="${esc(c.canceladoObs || '')}" placeholder="motivo do cancelamento, combinado com o cliente, etc.">`, '', 'full')}</div>`,
+    actions: [{ label: 'Fechar', cls: 'ghost' }, ...(ed ? [{ label: 'Reativar contrato', cls: 'ghost', onClick: async () => { if (!(await confirmDialog('Reativar o contrato? As parcelas em aberto voltam a ser cobradas.', { okLabel: 'Reativar' }))) return false; await ops.reativarContrato(contrato); toast('Contrato reativado.', 'ok'); } }] : []),
+      { label: ed ? 'Salvar' : 'Cancelar contrato', cls: ed ? 'primary' : 'danger', onClick: async () => {
+        await ops.salvarCancelamento(contrato, { data: $('#cc-d', m.el).value, obs: $('#cc-o', m.el).value, recolhido: $('#cc-r', m.el).value === '1', estorno: $('#cc-e', m.el).value === '1', valorEstornado: parseBRL($('#cc-v', m.el).value) });
+        toast(ed ? 'Dados do cancelamento salvos.' : 'Contrato cancelado.', 'ok');
+      } }] });
+  $('#cc-e', m.el).addEventListener('change', () => { const on = $('#cc-e', m.el).value === '1'; $('#cc-v', m.el).disabled = !on; if (on && !$('#cc-v', m.el).value) $('#cc-v', m.el).value = brInput(c.totalPago || ''); if (!on) $('#cc-v', m.el).value = ''; });
+  $('#cc-tot', m.el).onclick = (e) => { e.preventDefault(); $('#cc-e', m.el).value = '1'; $('#cc-e', m.el).dispatchEvent(new Event('change')); $('#cc-v', m.el).value = brInput(c.totalPago); };
 }

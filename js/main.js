@@ -9,6 +9,7 @@ import { create as createPainel } from './views/painel.js';
 import { create as createCobranca } from './views/cobranca.js';
 import { createLista, createDetalhe } from './views/clientes.js';
 import { createParcelas, createPagamentos, createRecompras, createAcordos, createAntecipacao, createInadimplencia, createHistorico } from './views/listas.js';
+import { createRelatorios } from './views/relatorios.js';
 import { createUsuarios, createConfig, createDados } from './views/admin.js';
 
 const root = document.getElementById('root');
@@ -18,7 +19,7 @@ let unsubs = [], timers = [], current = null, bootTs = 0, seenOnline = null, she
 
 const ROUTES = {
   painel: () => createPainel, clientes: () => createLista, parcelas: () => createParcelas, pagamentos: () => createPagamentos, recompras: () => createRecompras, acordos: () => createAcordos,
-  cobranca: () => createCobranca, inadimplencia: () => createInadimplencia, antecipacao: () => createAntecipacao, historico: () => createHistorico,
+  cobranca: () => createCobranca, inadimplencia: () => createInadimplencia, antecipacao: () => createAntecipacao, historico: () => createHistorico, relatorios: () => createRelatorios,
   usuarios: () => createUsuarios, config: () => createConfig, dados: () => createDados,
 };
 const ADMIN_ONLY = new Set(['usuarios', 'config', 'dados']);
@@ -26,6 +27,7 @@ const NAV = [
   ['VISÃO GERAL', [['painel', 'Painel', 'chart']]],
   ['OPERAÇÃO', [['clientes', 'Clientes', 'users'], ['parcelas', 'Parcelas', 'list'], ['pagamentos', 'Pagamentos', 'cash'], ['recompras', 'Recompras', 'undo', 'rec'], ['acordos', 'Acordos', 'handshake']]],
   ['COBRANÇA E RISCO', [['cobranca', 'Régua e críticos', 'bell', 'crit'], ['inadimplencia', 'Inadimplência', 'alert'], ['antecipacao', 'Antecipação', 'bank']]],
+  ['ANÁLISE', [['relatorios', 'Relatórios', 'chart']]],
   ['SISTEMA', [['historico', 'Histórico', 'clock'], ['usuarios', 'Usuários', 'shield'], ['config', 'Parâmetros e bancos', 'gear'], ['dados', 'Dados e planilha', 'db']]],
 ];
 const ctx = { M: () => store.model(), go: (h) => { if (location.hash === h) route(); else location.hash = h; } };
@@ -136,7 +138,7 @@ function onStoreChange() {
 function counts() {
   if (!app.user) return; const M = store.model();
   const set = (k, n, bad) => { const el = $(`[data-cnt="${k}"]`); if (el) { el.textContent = n || ''; el.classList.toggle('bad', !!bad && n > 0); el.style.display = n ? '' : 'none'; } };
-  set('rec', M.recompras.filter((r) => !r.status).length); set('crit', criticos(M).length, true);
+  set('rec', M.recompras.filter((r) => !r.status && !r.cancelado).length); set('crit', criticos(M).length, true);
 }
 
 /* ------------------------------------------------------------------ busca global */
@@ -145,7 +147,7 @@ function setupSearch() {
   const render = () => {
     const q = normalize(inp.value.trim()); if (!q) return box.classList.add('hide');
     list = store.model().contratos.filter((c) => normalize(c.cliente + ' ' + c.referencia + ' ' + c.id).includes(q)).slice(0, 8); hl = 0;
-    box.innerHTML = list.length ? list.map((c, i) => `<a data-id="${c.id}" class="${i === 0 ? 'hl' : ''}"><span><b>${esc(c.cliente)}</b><br><span class="mute sm">${esc(c.id)} · ${esc(c.banco)} · ref. ${esc(c.referencia || '—')}</span></span><span class="sm" style="text-align:right">${c.valorVencido > 0 ? `<b style="color:var(--bad)">${brl(c.valorVencido)} vencido</b>` : '<span style="color:var(--ok)">em dia</span>'}</span></a>`).join('') : '<div class="none">Nenhum cliente encontrado.</div>';
+    box.innerHTML = list.length ? list.map((c, i) => `<a data-id="${c.id}" class="${i === 0 ? 'hl' : ''}"><span><b>${esc(c.cliente)}</b><br><span class="mute sm">${esc(c.id)} · ${esc(c.banco)} · ref. ${esc(c.referencia || '—')}</span></span><span class="sm" style="text-align:right">${c.valorVencido > 0 ? `<b style="color:var(--bad)">${brl(c.valorVencido)} vencido</b>` : ''}${c.cancelado ? ' <span class="blk cnc">Cancelado</span>' : ''}${c.bloqueado ? ' <span class="blk">Bloqueado</span>' : ''}${c.devidoLoja > 0 ? ` <b style="color:var(--purple)">deve ${brl(c.devidoLoja)} à loja</b>` : c.valorVencido > 0 ? '' : '<span style="color:var(--ok)">em dia</span>'}</span></a>`).join('') : '<div class="none">Nenhum cliente encontrado.</div>';
     box.classList.remove('hide');
   };
   const open = (id) => { box.classList.add('hide'); inp.value = ''; inp.blur(); location.hash = '#/cliente/' + id; };
