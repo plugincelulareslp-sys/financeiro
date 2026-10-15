@@ -142,7 +142,26 @@ export async function criarContrato({ banco, cliente, referencia = '', valorTota
     return id;
   });
 }
-export async function editarContrato(id, campos) {
+/** Plano para recalcular as parcelas EM ABERTO (nível 0) de um contrato. Parcelas pagas, marcadas ou com pagamento parcial ficam como estão. */
+export function planoRecalculo(parcs, { valorTotal, qtd, primeiroVenc, mudouVenc = true }) {
+  const base = parcs.filter((p) => p.nivel === 0).sort((x, y) => x.n - y.n);
+  const fixas = base.filter((p) => p.marc || (p.valorPago || 0) > 0), abertas = base.filter((p) => !p.marc && !((p.valorPago || 0) > 0));
+  const somaFixas = round2(fixas.reduce((s, p) => s + p.valor, 0)), resto = round2(valorTotal - somaFixas), vagas = qtd - fixas.length;
+  if (vagas < 0) return { erro: `Há ${fixas.length} parcelas pagas/marcadas e a nova quantidade é ${qtd}.` };
+  if (vagas === 0 && resto !== 0) return { erro: `Todas as parcelas já estão pagas/marcadas (${brl(somaFixas)}); o valor total precisa ser ${brl(somaFixas)} ou aumente a quantidade.` };
+  if (vagas > 0 && resto <= 0) return { erro: `As parcelas pagas/marcadas somam ${brl(somaFixas)}, que já cobre o valor total informado.` };
+  const mesmaGrade = qtd === base.length, valores = vagas > 0 ? dividirParcelas(resto, vagas) : [];
+  const upd = [], criar = [], excluir = [];
+  if (mesmaGrade) {
+    abertas.forEach((p, i) => { const campos = {}; if (valores[i] !== p.valor) campos.valor = valores[i]; if (mudouVenc) { const nv = addMonths(primeiroVenc, p.n - 1); if (nv !== p.venc) campos.venc = nv; } if (Object.keys(campos).length) upd.push({ id: p.id, campos }); });
+  } else {
+    const usados = new Set(fixas.map((p) => p.n)); const livres = []; for (let n = 1; livres.length < vagas; n++) if (!usados.has(n)) livres.push(n);
+    abertas.forEach((p) => excluir.push(p.id));
+    livres.forEach((n, i) => criar.push({ n, valor: valores[i], venc: addMonths(primeiroVenc, n - 1) }));
+  }
+  return { fixas: fixas.length, abertas: abertas.length, vagas, resto, valores, upd, criar, excluir, mesmaGrade };
+}
+export async function editarContrato(id, campos, { recalcular = false } = {}) {
   need();
   return A().tx(async (t) => {
     const d = await t.get('contratos', id); if (!d) throw new OpError('Contrato não encontrado.');
@@ -152,8 +171,24 @@ export async function editarContrato(id, campos) {
       let v = campos[k]; if (k === 'cliente') v = String(v).trim().toUpperCase(); if (k === 'valorTotal') v = round2(v); if (k === 'qtd') v = Number(v);
       if (v !== d[k]) { upd[k] = v; dif.push(`${k}: ${d[k] ?? '—'} → ${v}`); }
     }
-    if (!dif.length) return;
-    t.update('contratos', id, upd);
+    let plano = null;
+    if (recalcular) {
+      await semCancelamento(t, id);
+      const novo = { valorTotal: 'valorTotal' in upd ? upd.valorTotal : d.valorTotal, qtd: 'qtd' in upd ? upd.qtd : d.qtd, primeiroVenc: 'primeiroVenc' in upd ? upd.primeiroVenc : d.primeiroVenc };
+      if (!(novo.valorTotal > 0) || !(novo.qtd >= 1) || !novo.primeiroVenc) throw new OpError('Valor total, quantidade e 1º vencimento são obrigatórios para recalcular as parcelas.');
+      const parcs = []; for (const x of app.store.model().pDe.get(id) || []) { const doc = await t.get('parcelas', x.id); if (doc) parcs.push({ ...doc, id: x.id }); }
+      plano = planoRecalculo(parcs, { ...novo, mudouVenc: 'primeiroVenc' in upd });
+      if (plano.erro) throw new OpError(plano.erro);
+      if (plano.criar.length === 0 && plano.excluir.length === 0 && plano.upd.length === 0) plano = null;
+    }
+    if (!dif.length && !plano) return;
+    if (Object.keys(upd).length) t.update('contratos', id, upd);
+    if (plano) {
+      for (const u of plano.upd) t.update('parcelas', u.id, u.campos);
+      for (const x of plano.excluir) t.delete('parcelas', x);
+      for (const c of plano.criar) t.set('parcelas', `${id}/0/${pad(c.n)}`, { contrato: id, nivel: 0, n: c.n, valor: c.valor, venc: c.venc, marc: null, dtBaixa: null, dtPgto: null, valorPago: 0 });
+      dif.push(`parcelas em aberto recalculadas (${plano.vagas} × ${brl(plano.valores[0] || 0)}; ${plano.fixas} pagas/marcadas preservadas)`);
+    }
     log(t, 'Editar contrato', { entidade: 'contrato', id, ...ctInfo(id), detalhe: dif.join('; ') });
   });
 }
@@ -184,6 +219,53 @@ export async function editarParcela(id, { venc, valor }) {
     if (!dif.length) return;
     t.update('parcelas', id, upd);
     log(t, 'Editar parcela', { entidade: 'parcela', id, ...ctInfo(d.contrato), detalhe: `Parcela ${d.n}${d.nivel ? ' (acordo ' + d.nivel + ')' : ''}: ${dif.join('; ')}` });
+  });
+}
+/** Correção completa de uma parcela: vencimento, valor, situação (aberta/Pago/Recomprado/Renegociado) e datas. Mudar a situação é só para admin. */
+export async function corrigirParcela(id, { venc, valor, marc, dtBaixa, dtPgto }) {
+  need();
+  const hoje = hojeISO(), isoOk = (v) => !v || (/^\d{4}-\d{2}-\d{2}$/.test(v) && v >= '2015-01-01');
+  dtBaixa = dtBaixa || null; dtPgto = dtPgto || null;
+  if (![venc, dtBaixa, dtPgto].every(isoOk)) throw new OpError('Data inválida.');
+  if (dtPgto && dtPgto > hoje) throw new OpError('A data do pagamento não pode ser futura.');
+  if (!venc) throw new OpError('Informe o vencimento.');
+  const M = app.store.model();
+  const ledger = (tipo) => M.pagamentos.some((g) => !g.estornado && g.alvoTipo === tipo && g.alvoId === id);
+  return A().tx(async (t) => {
+    const d = await t.get('parcelas', id); if (!d) throw new OpError('Parcela não encontrada.');
+    await semCancelamento(t, d.contrato);
+    const r = await t.get('recompras', id);
+    const dif = [], upd = {};
+    if (venc !== d.venc) { upd.venc = venc; dif.push(`vencimento ${fmtData(d.venc)} → ${fmtData(venc)}`); }
+    if (valor != null && round2(valor) !== d.valor) {
+      if (!(valor > 0)) throw new OpError('Valor inválido.');
+      if ((d.valorPago || 0) > 0 || ledger('parcela')) throw new OpError('Parcela com pagamento lançado: o valor não pode ser alterado (estorne o pagamento antes).');
+      upd.valor = round2(valor); dif.push(`valor ${brl(d.valor)} → ${brl(valor)}`);
+    }
+    const atual = d.marc || '', novo = marc == null ? atual : marc;
+    if (novo !== atual) {
+      need('admin');
+      if (!['', 'Pago', 'Recomprado', 'Renegociado'].includes(novo)) throw new OpError('Situação inválida.');
+      if (ledger('parcela') || ledger('recompra')) throw new OpError('Há pagamento lançado no caixa para esta parcela/recompra: estorne-o em Pagamentos antes de mudar a situação.');
+      if (novo === 'Recomprado') {
+        if (d.nivel >= params().maxNiveis) throw new OpError('No último nível de acordo a parcela só pode ser paga.');
+        if (!r) t.set('recompras', id, { parcela: id, ajuste: null, status: null, juridico: 'Não', dtBaixa: null, dtPgto: null, valorPago: 0 });
+        upd.marc = 'Recomprado'; upd.dtBaixa = dtBaixa || d.dtBaixa || hoje; upd.dtPgto = null;
+      } else {
+        if (r) t.delete('recompras', id);
+        if (novo === '') { upd.marc = null; upd.dtBaixa = null; upd.dtPgto = null; upd.valorPago = 0; }
+        else if (novo === 'Pago') { if (!dtPgto) throw new OpError('Informe a data do pagamento.'); upd.marc = 'Pago'; upd.dtPgto = dtPgto; upd.dtBaixa = dtBaixa || dtPgto; }
+        else { upd.marc = 'Renegociado'; upd.dtBaixa = dtBaixa || d.dtBaixa || hoje; upd.dtPgto = null; }
+      }
+      dif.push(`situação ${atual || 'em aberto'} → ${novo || 'em aberto'}${r && novo !== 'Recomprado' ? ' (recompra removida)' : ''}`);
+    } else if (atual === 'Pago' || atual === 'Renegociado' || atual === 'Recomprado') {
+      if (atual === 'Pago' && !dtPgto) throw new OpError('Parcela paga precisa da data do pagamento.');
+      if (dtBaixa !== (d.dtBaixa || null)) { upd.dtBaixa = dtBaixa; dif.push(`data da baixa ${fmtData(d.dtBaixa) || '—'} → ${fmtData(dtBaixa) || '—'}`); }
+      if (atual === 'Pago' && dtPgto !== (d.dtPgto || null)) { upd.dtPgto = dtPgto; dif.push(`data do pagamento ${fmtData(d.dtPgto) || '—'} → ${fmtData(dtPgto) || '—'}`); }
+    }
+    if (!dif.length) return;
+    t.update('parcelas', id, upd);
+    log(t, 'Corrigir parcela', { entidade: 'parcela', id, ...ctInfo(d.contrato), detalhe: `Parcela ${d.n}${d.nivel ? ' (acordo ' + d.nivel + ')' : ''}: ${dif.join('; ')}` });
   });
 }
 export async function reabrirParcela(id) {
