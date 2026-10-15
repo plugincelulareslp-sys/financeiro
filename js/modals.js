@@ -231,6 +231,21 @@ export function acaoDatas(parcelaId) { // adicionar / editar as datas da recompr
       await ops.editarDatasRecompra(parcelaId, { dtRecompra: $('#dt-r', m.el).value, dtBaixa: $('#dt-b', m.el).value, dtPgto: podePgto ? $('#dt-p', m.el).value : r.dtPgto }); toast('Datas da recompra salvas.', 'ok');
     } }] });
 }
+export function acaoPagamentoRecompra(parcelaId) { // corrigir / reabrir recompra paga (sem lançamento no caixa)
+  const r = M().rBy.get(parcelaId); if (!r) return;
+  if (M().pagamentos.some((g) => !g.estornado && g.alvoTipo === 'recompra' && g.alvoId === parcelaId)) return toast('Pagamento lançado no caixa: use "Estornar" em Pagamentos para desfazer.', 'warn');
+  const admin = app.user && app.user.role === 'admin';
+  const m = modal({ title: `Pagamento da recompra — parcela ${r.nParc}${r.nivel ? ' (acordo ' + r.nivel + ')' : ''}`, size: 'sm',
+    body: `<div class="alert info"><b>${esc(r.cliente)}</b> · venc. ${fmtData(r.venc)}<br>Valor da parcela <b>${brl(r.valorBase)}</b> · registrada como <b>paga</b> (sem lançamento no caixa)</div>
+      <div class="fg" style="margin-top:10px">${field('Valor pago (R$)', `<input class="inp" id="pr-pago" value="${brInput(r.pagoTotal)}">`)}${field('Data do pagamento', `<input class="inp" id="pr-d" type="date" value="${r.dtPgto || ''}" max="${hojeISO()}">`)}
+      ${ajusteFields('pr', { t: r.encargos > 0 ? '+' : r.encargos < 0 ? '-' : '0', v: Math.abs(r.encargos || 0), m: r.encargosMotivo })}</div><div class="preview" id="pr-prev"></div>`,
+    actions: [{ label: 'Cancelar', cls: 'ghost' }, ...(admin ? [{ label: 'Reabrir (desfazer pago)', cls: 'danger', onClick: async () => {
+      if (!(await confirmDialog('Desfazer o pagamento e voltar a recompra para "sem resolução"?', { title: 'Reabrir recompra', okLabel: 'Reabrir' }))) return false;
+      await ops.corrigirPagamentoRecompra(parcelaId, { reabrir: true }); toast('Recompra reaberta.', 'ok'); } }] : []),
+      { label: 'Salvar', cls: 'primary', onClick: async () => { const a = lerAjuste('pr', m.el); await ops.corrigirPagamentoRecompra(parcelaId, { valorPago: parseBRL($("#pr-pago", m.el).value), dtPgto: $('#pr-d', m.el).value, encargos: a.valor, motivo: a.motivo }); toast('Pagamento da recompra corrigido.', 'ok'); } }] });
+  const prev = () => { const a = lerAjuste('pr', m.el).valor; $('#pr-prev', m.el).innerHTML = `Valor da recompra: <b>${brl(round2(r.valorBase + a))}</b>${a ? ` <span class="mute">(${a > 0 ? '+' : '−'}${brl(Math.abs(a))})</span>` : ''}`; };
+  ligarAjuste('pr', m.el, prev); prev();
+}
 export async function acaoJuridico(parcelaId) { await ops.alternarJuridico(parcelaId); toast('Marcação jurídica atualizada.', 'ok'); }
 export function acaoAjustar(parcelaId) { // encargos / desconto da recompra
   const r = M().rBy.get(parcelaId); if (!r) return;

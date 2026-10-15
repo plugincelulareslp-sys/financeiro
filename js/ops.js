@@ -407,6 +407,31 @@ export async function editarDatasRecompra(parcelaId, { dtRecompra, dtBaixa, dtPg
     log(t, 'Datas da recompra', { entidade: 'recompra', id: parcelaId, ...ctInfo(p.contrato), detalhe: `Parcela ${p.n}: ${antes} → recompra ${fmtData(dtRecompra)}, baixa ${fmtData(dtBaixa) || '—'}, pagamento ${fmtData(dtPgto) || '—'}.` });
   });
 }
+/** Corrige uma recompra marcada como Paga que veio da importação (sem lançamento no caixa): valor pago, data e encargos; ou reabre. */
+export async function corrigirPagamentoRecompra(parcelaId, { valorPago, dtPgto, encargos, motivo, reabrir = false }) {
+  need();
+  const M = app.store.model();
+  if (M.pagamentos.some((g) => !g.estornado && g.alvoTipo === 'recompra' && g.alvoId === parcelaId)) throw new OpError('Este pagamento foi lançado no caixa: estorne-o em Pagamentos (ou na tela do cliente).');
+  return A().tx(async (t) => {
+    const r = await t.get('recompras', parcelaId), p = await t.get('parcelas', parcelaId);
+    if (!r || !p) throw new OpError('Recompra não encontrada.');
+    await semCancelamento(t, p.contrato);
+    if (r.status !== 'Pago') throw new OpError('A recompra não está paga.');
+    if (reabrir) {
+      need('admin');
+      t.update('recompras', parcelaId, { status: null, dtPgto: null, valorPago: 0 });
+      log(t, 'Reabrir recompra', { entidade: 'recompra', id: parcelaId, ...ctInfo(p.contrato), detalhe: `Recompra da parcela ${p.n} reaberta (pagamento desfeito, sem lançamento no caixa).` });
+      return;
+    }
+    const hoje = hojeISO(); dtPgto = dtPgto || null; encargos = round2(encargos || 0); valorPago = round2(valorPago || 0); motivo = String(motivo || '').trim();
+    if (!dtPgto || !/^\d{4}-\d{2}-\d{2}$/.test(dtPgto)) throw new OpError('Informe a data do pagamento.');
+    if (dtPgto > hoje) throw new OpError('A data do pagamento não pode ser futura.');
+    if (encargos !== 0 && motivo.length < 3) throw new OpError('Informe o motivo dos encargos/desconto.');
+    const novo = valorRecDoc({ ...r, encargos }, p); if (novo <= 0) throw new OpError('O desconto não pode zerar a recompra.');
+    t.update('recompras', parcelaId, { dtPgto, valorPago, encargos, encargosMotivo: encargos ? motivo : '' });
+    log(t, 'Corrigir pagamento da recompra', { entidade: 'recompra', id: parcelaId, ...ctInfo(p.contrato), detalhe: `Recompra da parcela ${p.n}: pago ${brl(valorPago || novo)} em ${fmtData(dtPgto)}; valor da recompra ${brl(novo)}${encargos ? ' (' + descAjuste(encargos) + ' — ' + motivo + ')' : ''}.` });
+  });
+}
 export async function alternarJuridico(parcelaId) {
   need();
   return A().tx(async (t) => {
